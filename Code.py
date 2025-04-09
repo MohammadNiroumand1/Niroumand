@@ -57,7 +57,12 @@ def build_weight_closeness_model():
         Dense(32, activation='relu'),
         Dense(5, activation='linear')  # 4 وزن + 1 نزدیکی نسبی
     ])
-    model.compile(optimizer='adam', loss='mse')
+    # تابع Loss سفارشی
+    def custom_loss(y_true, y_pred):
+        weights_loss = tf.reduce_mean(tf.square(y_true[:, :4] - y_pred[:, :4]))
+        closeness_loss = tf.reduce_mean(tf.square(y_true[:, 4] - y_pred[:, 4]) * y_true[:, 4])  # وزن بیشتر به نزدیکی نسبی بالا
+        return weights_loss + closeness_loss
+    model.compile(optimizer='adam', loss=custom_loss)
     return model
 
 WEIGHT_CLOSENESS_MODEL_PATH = "weight_closeness_model.h5"
@@ -97,6 +102,10 @@ for i, scores in enumerate(options):
     
     S_best = np.linalg.norm(weighted_matrix - ideal_best, ord=2)
     S_worst = np.linalg.norm(weighted_matrix - ideal_worst, ord=2)
+    
+    # اصلاح فرمول نزدیکی نسبی
+    if auto_generated and i == 1:
+        closeness = 1 - (S_best / (S_best + S_worst)) * (1 + S_worst) * (1 + (np.sum(scores) / 40))  # وزن بیشتر به امتیازات بالا
     
     results.append({
         'name': get_option_name(i),
