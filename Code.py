@@ -43,10 +43,12 @@ while True:
     options.append(scores)
 
 # اگر فقط یک گزینه وارد شده باشد، گزینه مرجع اضافه می‌کنیم
+auto_generated = False
 if len(options) == 1:
     print("\n⚠ فقط یک گزینه وارد شده است. گزینه مرجع با بالاترین امتیازات اضافه می‌شود.")
     reference_option = np.array([10, 10, 10, 10])  # بالاترین امتیازات ممکن
     options.append(reference_option)
+    auto_generated = True
 
 # 1. مدل وزن‌دهی ساده
 def build_weight_model():
@@ -82,8 +84,12 @@ for i, scores in enumerate(options):
     weighted_matrix = normalized_scores * weights
     
     # راه‌حل‌های ایده‌آل
-    ideal_best = np.max([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
-    ideal_worst = np.min([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
+    if len(options) == 2 and i == 1 and auto_generated:  # حالت تک‌گزینه‌ای (گزینه اتوماتیک)
+        ideal_best = weighted_matrix
+        ideal_worst = np.zeros_like(weighted_matrix)
+    else:  # حالت چندگزینه‌ای
+        ideal_best = np.max([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
+        ideal_worst = np.min([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
     
     # محاسبه فواصل
     S_best = np.linalg.norm(weighted_matrix - ideal_best, ord=2)
