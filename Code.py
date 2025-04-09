@@ -50,72 +50,53 @@ if len(options) == 1:
     options.append(reference_option)
     auto_generated = True
 
-# 1. مدل وزن‌دهی ساده
-def build_weight_model():
+# 1. مدل وزن‌دهی و محاسبه نزدیکی نسبی
+def build_weight_closeness_model():
     model = Sequential([
-        Dense(32, input_shape=(4,), activation='relu'),
-        Dense(4, activation='linear')
+        Dense(64, input_shape=(4,), activation='relu'),
+        Dense(32, activation='relu'),
+        Dense(5, activation='linear')  # 4 وزن + 1 نزدیکی نسبی
     ])
     model.compile(optimizer='adam', loss='mse')
     return model
 
-WEIGHT_MODEL_PATH = "weights_model.h5"
-if not os.path.exists(WEIGHT_MODEL_PATH):
-    weight_model = build_weight_model()
+WEIGHT_CLOSENESS_MODEL_PATH = "weight_closeness_model.h5"
+if not os.path.exists(WEIGHT_CLOSENESS_MODEL_PATH):
+    weight_closeness_model = build_weight_closeness_model()
     X_train = np.random.uniform(2.5, 10, (5000, 4))
-    y_train = X_train / np.sum(X_train, axis=1, keepdims=True)
-    weight_model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
-    weight_model.save(WEIGHT_MODEL_PATH)
+    y_train = np.zeros((5000, 5))
+    for i in range(5000):
+        normalized_scores = X_train[i] / np.sqrt(np.sum(X_train[i]**2))
+        ideal_best = np.max(normalized_scores)
+        ideal_worst = np.min(normalized_scores)
+        S_best = np.linalg.norm(normalized_scores - ideal_best, ord=2)
+        S_worst = np.linalg.norm(normalized_scores - ideal_worst, ord=2)
+        closeness = 1 - (S_best / (S_best + S_worst)) * (1 + S_worst)
+        y_train[i] = np.concatenate((X_train[i] / np.sum(X_train[i]), [closeness]))
+    weight_closeness_model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
+    weight_closeness_model.save(WEIGHT_CLOSENESS_MODEL_PATH)
 else:
-    weight_model = load_model(WEIGHT_MODEL_PATH)
-
-# 2. مدل محاسبه نزدیکی نسبی
-def build_closeness_model():
-    model = Sequential([
-        Dense(32, input_shape=(2,), activation='relu'),
-        Dense(1, activation='sigmoid')
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-CLOSENESS_MODEL_PATH = "closeness_model.h5"
-if not os.path.exists(CLOSENESS_MODEL_PATH):
-    closeness_model = build_closeness_model()
-    X_train_closeness = np.random.uniform(0, 1, (5000, 2))  # S_best, S_worst
-    y_train_closeness = X_train_closeness[:, 1] / np.sum(X_train_closeness, axis=1)  # S_worst / (S_best + S_worst)
-    closeness_model.fit(X_train_closeness, y_train_closeness, epochs=50, batch_size=32, verbose=0)
-    closeness_model.save(CLOSENESS_MODEL_PATH)
-else:
-    closeness_model = load_model(CLOSENESS_MODEL_PATH)
+    weight_closeness_model = load_model(WEIGHT_CLOSENESS_MODEL_PATH)
 
 # محاسبات برای هر گزینه
 results = []
 for i, scores in enumerate(options):
-    weights = weight_model.predict(scores.reshape(1, -1), verbose=0)[0]
+    weights_closeness = weight_closeness_model.predict(scores.reshape(1, -1), verbose=0)[0]
+    weights = weights_closeness[:4] / np.sum(weights_closeness[:4])
+    closeness = weights_closeness[4]
     
-    # نرمال‌سازی وزن‌ها
-    weights = weights / np.sum(weights)
-    
-    # نرمال‌سازی
     normalized_scores = scores / np.sqrt(np.sum(scores**2))
-    
-    # ماتریس وزنی
     weighted_matrix = normalized_scores * weights
     
-    # راه‌حل‌های ایده‌آل
-    if len(options) == 2 and i == 1 and auto_generated:  # حالت تک‌گزینه‌ای (گزینه اتوماتیک)
+    if len(options) == 2 and i == 1 and auto_generated:
         ideal_best = weighted_matrix
         ideal_worst = np.zeros_like(weighted_matrix)
-    else:  # حالت چندگزینه‌ای
+    else:
         ideal_best = np.max([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
         ideal_worst = np.min([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
     
-    # محاسبه فواصل
     S_best = np.linalg.norm(weighted_matrix - ideal_best, ord=2)
     S_worst = np.linalg.norm(weighted_matrix - ideal_worst, ord=2)
-    
-    # محاسبه نزدیکی نسبی با استفاده از پرسپترون‌ها
-    closeness = closeness_model.predict(np.array([[S_best, S_worst]]), verbose=0)[0][0]
     
     results.append({
         'name': get_option_name(i),
