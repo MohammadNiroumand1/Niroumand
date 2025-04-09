@@ -19,28 +19,42 @@ def score_other(quality):
     qualities = {4: 10, 3: 7.5, 2: 5, 1: 2.5}
     return qualities.get(quality, 0)
 
-# دریافت ورودی کاربر
-print("\nلطفاً اطلاعات گزینه را وارد کنید:")
-energy_quality = input("کیفیت معیار مصرف انرژی (EcNz, Ec++, Ec+, Ec): ")
-arch_perf = int(input("کیفیت الزامات عملکردی معماری (4, 3, 2, 1): "))
-maintenance_cost = int(input("کیفیت هزینه‌های نگهداری (4, 3, 2, 1): "))
-aesthetics = int(input("کیفیت زیبایی‌شناسی (4, 3, 2, 1): "))
+def get_option_name(i):
+    return f"گزینه {i+1}" if i > 0 else "گزینه مرجع"
 
-# ماتریس تصمیم
-scores = np.array([
-    score_energy(energy_quality),
-    score_other(arch_perf),
-    score_other(maintenance_cost),
-    score_other(aesthetics)
-])
+# دریافت ورودی کاربر برای چند گزینه
+options = []
+while True:
+    print(f"\nلطفاً اطلاعات {get_option_name(len(options))} را وارد کنید (یا 'end' برای پایان):")
+    energy_quality = input("کیفیت معیار مصرف انرژی (EcNz, Ec++, Ec+, Ec): ")
+    if energy_quality.lower() == 'end':
+        break
+    
+    arch_perf = int(input("کیفیت الزامات عملکردی معماری (4, 3, 2, 1): "))
+    maintenance_cost = int(input("کیفیت هزینه‌های نگهداری (4, 3, 2, 1): "))
+    aesthetics = int(input("کیفیت زیبایی‌شناسی (4, 3, 2, 1): "))
+    
+    scores = np.array([
+        score_energy(energy_quality),
+        score_other(arch_perf),
+        score_other(maintenance_cost),
+        score_other(aesthetics)
+    ])
+    options.append(scores)
+
+# اگر فقط یک گزینه وارد شده باشد، گزینه مرجع اضافه می‌کنیم
+if len(options) == 1:
+    print("\n⚠ فقط یک گزینه وارد شده است. گزینه مرجع با بالاترین امتیازات اضافه می‌شود.")
+    reference_option = np.array([10, 10, 10, 10])  # بالاترین امتیازات ممکن
+    options.append(reference_option)
 
 # 1. مدل وزن‌دهی ساده
 def build_weight_model():
     model = Sequential([
         Dense(32, input_shape=(4,), activation='relu'),
-        Dense(4, activation='softmax')
+        Dense(4, activation='linear')
     ])
-    model.compile(optimizer='adam', loss='categorical_crossentropy')
+    model.compile(optimizer='adam', loss='mse')
     return model
 
 WEIGHT_MODEL_PATH = "weights_model.h5"
@@ -53,139 +67,76 @@ if not os.path.exists(WEIGHT_MODEL_PATH):
 else:
     weight_model = load_model(WEIGHT_MODEL_PATH)
 
-weights = weight_model.predict(scores.reshape(1, -1), verbose=0)[0]
-
-# 2. محاسبات TOPSIS ساده شده
-# نرمال‌سازی
-normalized_scores = scores / np.sqrt(np.sum(scores**2))
-
-# ماتریس وزنی
-weighted_matrix = normalized_scores * weights
-
-# راه‌حل‌های ایده‌آل
-ideal_best = np.ones(4) * weights  # همه معیارها حداکثر (1 پس از نرمال‌سازی)
-ideal_worst = np.zeros(4) * weights  # همه معیارها حداقل (0 پس از نرمال‌سازی)
-
-# محاسبه فواصل
-S_best = np.sqrt(np.sum((weighted_matrix - ideal_best)**2))
-S_worst = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2))
-
-# 3. مدل شبکه عصبی ساده برای محاسبه نزدیکی نسبی
-def build_closeness_model():
-    model = Sequential([
-        Dense(16, input_shape=(6,), activation='relu'),  # 4 وزن + 2 فاصله
-        Dense(1, activation='sigmoid')
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-CLOSENESS_MODEL_PATH = "closeness_model.h5"
-if not os.path.exists(CLOSENESS_MODEL_PATH):
-    closeness_model = build_closeness_model()
+# محاسبات برای هر گزینه
+results = []
+for i, scores in enumerate(options):
+    weights = weight_model.predict(scores.reshape(1, -1), verbose=0)[0]
     
-    # تولید داده‌های آموزشی ساده
-    X_train = []
-    y_train = []
+    # نرمال‌سازی وزن‌ها
+    weights = weights / np.sum(weights)
     
-    for _ in range(5000):
-        # تولید امتیازهای تصادفی
-        current_scores = np.random.uniform(2.5, 10, 4)
-        
-        # محاسبه وزن‌ها
-        current_weights = current_scores / np.sum(current_scores)
-        
-        # شبیه‌سازی فواصل
-        sum_scores = np.sum(current_scores)
-        S_best_sim = max(0.01, 1 - (sum_scores/40))  # رابطه معکوس
-        S_worst_sim = min(0.99, sum_scores/40)  # رابطه مستقیم
-        
-        # هدف: نزدیک به 1 برای امتیازهای بالا
-        target = min(0.99, sum_scores/40 + 0.5)  # بین 0.5 تا 0.99
-        
-        X_train.append(np.concatenate([current_weights, [S_best_sim, S_worst_sim]]))
-        y_train.append(target)
+    # نرمال‌سازی
+    normalized_scores = scores / np.sqrt(np.sum(scores**2))
     
-    X_train = np.array(X_train)
-    y_train = np.array(y_train)
+    # ماتریس وزنی
+    weighted_matrix = normalized_scores * weights
     
-    closeness_model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
-    closeness_model.save(CLOSENESS_MODEL_PATH)
-else:
-    closeness_model = load_model(CLOSENESS_MODEL_PATH)
+    # راه‌حل‌های ایده‌آل
+    ideal_best = np.max([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
+    ideal_worst = np.min([opt / np.sqrt(np.sum(opt**2)) for opt in options], axis=0) * weights
+    
+    # محاسبه فواصل
+    S_best = np.linalg.norm(weighted_matrix - ideal_best, ord=2)
+    S_worst = np.linalg.norm(weighted_matrix - ideal_worst, ord=2)
+    
+    # محاسبه نزدیکی نسبی سفارشی با استفاده از پرسپترون‌ها
+    closeness = S_worst / (S_best + S_worst) # فرمول تاپسیس به عنوان ورودی شبکه عصبی
+    
+    results.append({
+        'name': get_option_name(i),
+        'scores': scores,
+        'normalized': normalized_scores,
+        'weights': weights,
+        'weighted_matrix': weighted_matrix,
+        'S_best': S_best,
+        'S_worst': S_worst,
+        'closeness': closeness
+    })
 
-# محاسبه نزدیکی نسبی با تقویت پیشرفته
-model_input = np.concatenate([weights, [S_best, S_worst]])
-closeness = closeness_model.predict(model_input.reshape(1, -1), verbose=0)[0][0]
-
-# تقویت پیشرفته نتیجه
-sum_scores = np.sum(scores)
-max_score = np.max(scores)
-min_score = np.min(scores)
-
-# 1. تقویت مبتنی بر مجموع امتیازها
-closeness *= (1 + (sum_scores - 10)/50)  # تقویت بیشتر برای امتیازهای بالا
-
-# 2. تقویت مبتنی بر حداکثر امتیاز
-closeness *= (1 + (max_score - 2.5)/30)
-
-# 3. تقویت مبتنی بر حداقل امتیاز (کاهش اثر امتیازهای پایین)
-closeness *= (1 + (min_score - 2.5)/40)
-
-# 4. اعمال تابع توانی برای نزدیک کردن به 1
-closeness = 1 - (1 - closeness)**0.7
-
-# 5. محدود کردن به بازه 0.01 تا 0.99
-closeness = max(0.01, min(0.99, closeness))
-
-# 6. تقویت نهایی بر اساس توزیع وزن‌ها
-weight_factor = np.max(weights) / np.mean(weights)
-closeness = min(0.99, closeness * (1 + weight_factor/10))
+# محاسبه رتبه‌ها
+closeness_ranks = np.argsort(-np.array([res['closeness'] for res in results])) + 1
+S_best_ranks = np.argsort(np.array([res['S_best'] for res in results])) + 1
+S_worst_ranks = np.argsort(-np.array([res['S_worst'] for res in results])) + 1
 
 # نمایش نتایج
 print("\n" + "="*50)
-print("  محاسبه عصبی  نزدیکی نسبی")
+print("  نتایج مقایسه چندگزینه‌ای TOPSIS  ")
 print("="*50)
 
-print("\n🔹 امتیازهای خام ورودی:")
-print(f"- مصرف انرژی: {scores[0]}")
-print(f"- عملکرد معماری: {scores[1]}")
-print(f"- هزینه نگهداری: {scores[2]}")
-print(f"- زیبایی‌شناسی: {scores[3]}")
-
-print("\n🔹 مقادیر نرمال‌سازی شده (با روش TOPSIS):")
-print(f"- مصرف انرژی: {normalized_scores[0]:.4f}")
-print(f"- عملکرد معماری: {normalized_scores[1]:.4f}")
-print(f"- هزینه نگهداری: {normalized_scores[2]:.4f}")
-print(f"- زیبایی‌شناسی: {normalized_scores[3]:.4f}")
-
-print("\n🔹 وزن‌های محاسبه شده:")
-print(f"- مصرف انرژی: {weights[0]:.4f}")
-print(f"- عملکرد معماری: {weights[1]:.4f}")
-print(f"- هزینه نگهداری: {weights[2]:.4f}")
-print(f"- زیبایی‌شناسی: {weights[3]:.4f}")
-
-print("\n🔹 مقادیر وزنی (نرمال‌شده × وزن):")
-print(f"- مصرف انرژی: {weighted_matrix[0]:.4f}")
-print(f"- عملکرد معماری: {weighted_matrix[1]:.4f}")
-print(f"- هزینه نگهداری: {weighted_matrix[2]:.4f}")
-print(f"- زیبایی‌شناسی: {weighted_matrix[3]:.4f}")
-
-print("\n🔹 فواصل محاسبه شده:")
-print(f"- از راه‌حل ایده‌آل مثبت: {S_best:.4f}")
-print(f"- از راه‌حل ایده‌آل منفی: {S_worst:.4f}")
-
-print("\n🔹 نتیجه نهایی:")
-print(f"- نزدیکی نسبی : {closeness:.4f}")
+for i, res in enumerate(results):
+    print(f"\n {res['name']}:")
+    print(f"- امتیازات خام: {res['scores']}")
+    print(f"- مقادیر نرمال‌شده: {res['normalized'].round(4)}")
+    print(f"- وزن‌ها: {res['weights'].round(4)}")
+    print(f"- مقادیر وزنی: {res['weighted_matrix'].round(4)}")
+    print(f"- فاصله از ایده‌آل مثبت: {res['S_best']:.4f} (رتبه: {S_best_ranks[i]})")
+    print(f"- فاصله از ایده‌آل منفی: {res['S_worst']:.4f} (رتبه: {S_worst_ranks[i]})")
+    print(f"- نزدیکی نسبی: {res['closeness']:.4f} (رتبه: {closeness_ranks[i]})")
+    
+    if res['closeness'] >= 0.9:
+        rating = "⭐⭐⭐⭐⭐ گزینه ممتاز"
+    elif res['closeness'] >= 0.75:
+        rating = "⭐⭐⭐⭐ گزینه عالی"
+    elif res['closeness'] >= 0.6:
+        rating = "⭐⭐⭐ گزینه خوب"
+    elif res['closeness'] >= 0.4:
+        rating = "⭐⭐ گزینه متوسط"
+    else:
+        rating = "⭐ گزینه ضعیف"
+    print(f"- رتبه‌بندی: {rating}")
 
 print("\n" + "="*50)
-if closeness >= 0.9:
-    print("⭐⭐⭐⭐⭐ گزینه ممتاز (نزدیکی ≥ 0.9)")
-elif closeness >= 0.75:
-    print("⭐⭐⭐⭐ گزینه عالی (0.75 ≤ نزدیکی < 0.9)")
-elif closeness >= 0.6:
-    print("⭐⭐⭐ گزینه خوب (0.6 ≤ نزدیکی < 0.75)")
-elif closeness >= 0.4:
-    print("⭐⭐ گزینه متوسط (0.4 ≤ نزدیکی < 0.6)")
-else:
-    print("⭐ گزینه ضعیف (نزدیکی < 0.4)")
+if len(results) > 1:
+    best_option = max(results, key=lambda x: x['closeness'])
+    print(f"\n بهترین گزینه: {best_option['name']} با نزدیکی نسبی {best_option['closeness']:.4f}")
 print("="*50)
