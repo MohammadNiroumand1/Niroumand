@@ -69,6 +69,25 @@ if not os.path.exists(WEIGHT_MODEL_PATH):
 else:
     weight_model = load_model(WEIGHT_MODEL_PATH)
 
+# 2. مدل محاسبه نزدیکی نسبی
+def build_closeness_model():
+    model = Sequential([
+        Dense(32, input_shape=(2,), activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+CLOSENESS_MODEL_PATH = "closeness_model.h5"
+if not os.path.exists(CLOSENESS_MODEL_PATH):
+    closeness_model = build_closeness_model()
+    X_train_closeness = np.random.uniform(0, 1, (5000, 2))  # S_best, S_worst
+    y_train_closeness = X_train_closeness[:, 1] / np.sum(X_train_closeness, axis=1)  # S_worst / (S_best + S_worst)
+    closeness_model.fit(X_train_closeness, y_train_closeness, epochs=50, batch_size=32, verbose=0)
+    closeness_model.save(CLOSENESS_MODEL_PATH)
+else:
+    closeness_model = load_model(CLOSENESS_MODEL_PATH)
+
 # محاسبات برای هر گزینه
 results = []
 for i, scores in enumerate(options):
@@ -95,8 +114,8 @@ for i, scores in enumerate(options):
     S_best = np.linalg.norm(weighted_matrix - ideal_best, ord=2)
     S_worst = np.linalg.norm(weighted_matrix - ideal_worst, ord=2)
     
-    # محاسبه نزدیکی نسبی سفارشی با استفاده از پرسپترون‌ها
-    closeness = S_worst / (S_best + S_worst) # فرمول تاپسیس به عنوان ورودی شبکه عصبی
+    # محاسبه نزدیکی نسبی با استفاده از پرسپترون‌ها
+    closeness = closeness_model.predict(np.array([[S_best, S_worst]]), verbose=0)[0][0]
     
     results.append({
         'name': get_option_name(i),
