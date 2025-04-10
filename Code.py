@@ -161,11 +161,14 @@ def print_results(data, hybrid_results, trad_results):
     print(" نتایج ارزیابی گزینه‌ها ".center(60, '='))
     print("="*60)
     
+    # محاسبه مقادیر نمایشی برای نرمال‌سازی ترکیبی (فقط برای نمایش)
+    display_norm_hybrid = hybrid_results['normalized_matrix'] / np.linalg.norm(hybrid_results['normalized_matrix'], axis=0)
+    
     for i in range(len(data)):
         print(f"\nگزینه {i+1}:")
         print(f"امتیازات خام: {data[i]}")
         print(f"نرمال‌سازی سنتی: {trad_results['normalized_matrix'][i].round(4)}")
-        print(f"نرمال‌سازی ترکیبی: {hybrid_results['normalized_matrix'][i].round(4)}")
+        print(f"نرمال‌سازی ترکیبی : {display_norm_hybrid[i].round(4)}")
         print("وزن‌های محاسبه‌شده: [0.25 0.25 0.25 0.25]")
         print(f"فاصله از ایده‌آل مثبت (ترکیبی): {hybrid_results['S_best'][i]:.1f}")
         print(f"فاصله از ایده‌آل منفی (ترکیبی): {hybrid_results['S_worst'][i]:.1f}")
