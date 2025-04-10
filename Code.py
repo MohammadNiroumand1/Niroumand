@@ -50,8 +50,8 @@ if len(options) == 1:
     options.append(reference_option)
     auto_generated = True
 
-# مدل شبکه عصبی برای وزن‌دهی و نرمال‌سازی
-def build_mlp_model():
+# مدل شبکه عصبی برای نرمال‌سازی
+def build_normalization_model():
     model = Sequential([
         Dense(64, input_shape=(4,), activation='relu', kernel_initializer='glorot_uniform'),
         Dense(32, activation='relu', kernel_initializer='glorot_uniform'),
@@ -62,17 +62,49 @@ def build_mlp_model():
                  metrics=['mae'])
     return model
 
+# مدل شبکه عصبی برای وزن‌دهی
+def build_weight_model():
+    model = Sequential([
+        Dense(64, input_shape=(4,), activation='relu', kernel_initializer='glorot_uniform'),
+        Dense(32, activation='relu', kernel_initializer='glorot_uniform'),
+        Dense(4, activation='softmax', kernel_initializer='glorot_uniform')
+    ])
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                 loss='mse',
+                 metrics=['mae'])
+    return model
+
+NORMALIZATION_MODEL_PATH = "normalization_model.h5"
 WEIGHT_MODEL_PATH = "weight_model.h5"
+
+# آموزش یا بارگذاری مدل نرمال‌سازی
+if not os.path.exists(NORMALIZATION_MODEL_PATH):
+    print("آموزش مدل نرمال‌سازی...")
+    normalization_model = build_normalization_model()
+    
+    # تولید داده‌های آموزشی برای نرمال‌سازی
+    X_train = np.random.uniform(2.5, 10, (10000, 4))
+    X_train = np.vstack([X_train, np.ones((1000,4))*10, np.ones((1000,4))*2.5])
+    
+    # هدف: نرمال‌سازی اقلیدسی (شبیه‌سازی رفتار سنتی)
+    y_train = X_train / np.sqrt(np.sum(X_train**2, axis=1, keepdims=True))
+    
+    normalization_model.fit(X_train, y_train, epochs=100, batch_size=64, verbose=0)
+    normalization_model.save(NORMALIZATION_MODEL_PATH)
+else:
+    normalization_model = load_model(NORMALIZATION_MODEL_PATH)
+
+# آموزش یا بارگذاری مدل وزن‌دهی
 if not os.path.exists(WEIGHT_MODEL_PATH):
-    print("آموزش مدل وزن‌دهی و نرمال‌سازی...")
-    weight_model = build_mlp_model()
+    print("آموزش مدل وزن‌دهی...")
+    weight_model = build_weight_model()
     
     # تولید داده‌های آموزشی برای وزن‌دهی
     X_train = np.random.uniform(2.5, 10, (10000, 4))
     X_train = np.vstack([X_train, np.ones((1000,4))*10, np.ones((1000,4))*2.5])
     
-    # نرمال‌سازی سنتی برای آموزش مدل
-    normalized_train = X_train / np.sqrt(np.sum(X_train**2, axis=1, keepdims=True))
+    # نرمال‌سازی داده‌ها با مدل نرمال‌سازی
+    normalized_train = normalization_model.predict(X_train, verbose=0)
     
     # وزن‌های اولیه (میانگین برابر)
     y_train = np.ones((12000, 4)) * 0.25
@@ -82,12 +114,12 @@ if not os.path.exists(WEIGHT_MODEL_PATH):
 else:
     weight_model = load_model(WEIGHT_MODEL_PATH)
 
-# محاسبات TOPSIS با وزن‌دهی و نرمال‌سازی شبکه عصبی
+# محاسبات TOPSIS با نرمال‌سازی و وزن‌دهی شبکه عصبی
 results = []
 all_scores = np.array(options)
 
-# نرمال‌سازی سنتی ماتریس تصمیم
-normalized_matrix = all_scores / np.sqrt(np.sum(all_scores**2, axis=1, keepdims=True))
+# نرمال‌سازی با شبکه عصبی (جایگزین نرمال‌سازی سنتی)
+normalized_matrix = normalization_model.predict(all_scores, verbose=0)
 
 # محاسبه وزن‌ها با شبکه عصبی
 all_weights = weight_model.predict(normalized_matrix, verbose=0)
@@ -134,7 +166,7 @@ print("="*50)
 for i, res in enumerate(results):
     print(f"\n {res['name']}:")
     print(f"- امتیازات خام: {res['scores']}")
-    print(f"- مقادیر نرمال‌شده: {res['normalized'].round(4)}")
+    print(f"- مقادیر نرمال‌شده (شبکه عصبی): {res['normalized'].round(4)}")
     print(f"- وزن‌های محاسبه شده توسط شبکه عصبی: {res['weights'].round(4)}")
     print(f"- مقادیر وزنی: {res['weighted_matrix'].round(4)}")
     print(f"- فاصله از ایده‌آل مثبت: {res['S_best']:.4f} (رتبه: {S_best_ranks[i]})")
