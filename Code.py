@@ -1,16 +1,19 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense
-import os
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, Input, Concatenate
+from tensorflow.keras.optimizers import Adam
+from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
 
-# تنظیمات TensorFlow
-tf.get_logger().setLevel('ERROR')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# تنظیمات تکرارپذیری
 np.random.seed(42)
 tf.random.set_seed(42)
 
-# توابع امتیازدهی
+# ==============================================
+# بخش 1: توابع کمکی و آماده‌سازی داده‌ها
+# ==============================================
+
 def score_energy(quality):
     qualities = {'EcNz': 10, 'Ec++': 7.5, 'Ec+': 5, 'Ec': 2.5}
     return qualities.get(quality, 0)
@@ -19,175 +22,206 @@ def score_other(quality):
     qualities = {4: 10, 3: 7.5, 2: 5, 1: 2.5}
     return qualities.get(quality, 0)
 
-def get_option_name(i):
-    return f"گزینه {i+1}" if i > 0 else "گزینه مرجع"
-
-# دریافت ورودی کاربر
-options = []
-while True:
-    print(f"\nلطفاً اطلاعات {get_option_name(len(options))} را وارد کنید (یا 'end' برای پایان):")
-    energy_quality = input("کیفیت معیار مصرف انرژی (EcNz, Ec++, Ec+, Ec): ")
-    if energy_quality.lower() == 'end':
-        break
+def get_user_input():
+    options = []
+    print("\nلطفاً اطلاعات گزینه‌ها را وارد کنید (برای پایان 'end' را وارد کنید):")
     
-    arch_perf = int(input("کیفیت الزامات عملکردی معماری (4, 3, 2, 1): "))
-    maintenance_cost = int(input("کیفیت هزینه‌های نگهداری (4, 3, 2, 1): "))
-    aesthetics = int(input("کیفیت زیبایی‌شناسی (4, 3, 2, 1): "))
+    while True:
+        print(f"\nگزینه {len(options)+1}:")
+        energy = input("کیفیت مصرف انرژی (EcNz, Ec++, Ec+, Ec): ")
+        if energy.lower() == 'end':
+            break
+            
+        arch = int(input("عملکرد معماری (4,3,2,1): "))
+        cost = int(input("هزینه نگهداری (4,3,2,1): "))
+        aesthetic = int(input("زیبایی‌شناسی (4,3,2,1): "))
+        
+        scores = np.array([
+            score_energy(energy),
+            score_other(arch),
+            score_other(cost),
+            score_other(aesthetic)
+        ])
+        options.append(scores)
     
-    scores = np.array([
-        score_energy(energy_quality),
-        score_other(arch_perf),
-        score_other(maintenance_cost),
-        score_other(aesthetics)
-    ])
-    options.append(scores)
+    return np.array(options)
 
-# اضافه کردن گزینه مرجع اگر نیاز باشد
-auto_generated = False
-if len(options) == 1:
-    print("\n⚠ فقط یک گزینه وارد شده است. گزینه مرجع با بالاترین امتیازات اضافه می‌شود.")
-    reference_option = np.array([10, 10, 10, 10])
-    options.append(reference_option)
-    auto_generated = True
+# ==============================================
+# بخش 2: مدل‌های عصبی
+# ==============================================
 
-# مدل شبکه عصبی برای نرمال‌سازی
-def build_normalization_model():
+def build_feature_extractor(input_dim):
+    """مدل استخراج ویژگی پیشرفته"""
     model = Sequential([
-        Dense(64, input_shape=(4,), activation='relu', kernel_initializer='glorot_uniform'),
-        Dense(32, activation='relu', kernel_initializer='glorot_uniform'),
-        Dense(4, activation='softmax', kernel_initializer='glorot_uniform')
+        Dense(32, activation='relu', input_shape=(input_dim,)),
+        Dense(16, activation='relu'),
+        Dense(input_dim, activation='linear', name='feature_output')
     ])
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                 loss='mse',
-                 metrics=['mae'])
     return model
 
-# مدل شبکه عصبی برای وزن‌دهی
-def build_weight_model():
+def build_weight_model(input_dim):
+    """مدل محاسبه وزن‌های معیارها (اصلاح شده برای خروجی ثابت 0.25)"""
     model = Sequential([
-        Dense(64, input_shape=(4,), activation='relu', kernel_initializer='glorot_uniform'),
-        Dense(32, activation='relu', kernel_initializer='glorot_uniform'),
-        Dense(4, activation='softmax', kernel_initializer='glorot_uniform')
+        Dense(32, activation='relu', input_shape=(input_dim,)),
+        Dense(16, activation='relu'),
+        Dense(input_dim, activation='linear'),
+        tf.keras.layers.Lambda(lambda x: tf.ones_like(x) * 0.25)
     ])
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-                 loss='mse',
-                 metrics=['mae'])
     return model
 
-NORMALIZATION_MODEL_PATH = "normalization_model.h5"
-WEIGHT_MODEL_PATH = "weight_model.h5"
+def build_distance_model(input_dim):
+    """مدل محاسبه فاصله هوشمند"""
+    input_layer = Input(shape=(input_dim*2,))
+    x = Dense(32, activation='relu')(input_layer)
+    x = Dense(16, activation='relu')(x)
+    output = Dense(1, activation='linear')(x)
+    return Model(input_layer, output)
 
-# آموزش یا بارگذاری مدل نرمال‌سازی
-if not os.path.exists(NORMALIZATION_MODEL_PATH):
-    print("آموزش مدل نرمال‌سازی...")
-    normalization_model = build_normalization_model()
-    
-    # تولید داده‌های آموزشی برای نرمال‌سازی
+# ==============================================
+# بخش 3: آموزش مدل‌ها
+# ==============================================
+
+def train_models():
+    # تولید داده‌های مصنوعی برای آموزش
     X_train = np.random.uniform(2.5, 10, (10000, 4))
-    X_train = np.vstack([X_train, np.ones((1000,4))*10, np.ones((1000,4))*2.5])
     
-    # هدف: نرمال‌سازی اقلیدسی (شبیه‌سازی رفتار سنتی)
-    y_train = X_train / np.sqrt(np.sum(X_train**2, axis=1, keepdims=True))
+    # آموزش مدل استخراج ویژگی
+    feature_model = build_feature_extractor(4)
+    feature_model.compile(optimizer=Adam(0.001), loss='mse')
+    feature_model.fit(X_train, X_train, epochs=50, batch_size=32, verbose=0)
     
-    normalization_model.fit(X_train, y_train, epochs=100, batch_size=64, verbose=0)
-    normalization_model.save(NORMALIZATION_MODEL_PATH)
-else:
-    normalization_model = load_model(NORMALIZATION_MODEL_PATH)
+    # آموزش مدل وزن‌دهی (نیازی به آموزش واقعی نیست)
+    weight_model = build_weight_model(4)
+    weight_model.compile(optimizer=Adam(0.001), loss='mse')
+    
+    # آموزش مدل فاصله
+    distance_model = build_distance_model(4)
+    distance_model.compile(optimizer=Adam(0.001), loss='mse')
+    # تولید داده‌های جفت‌شده برای آموزش فاصله
+    X_pairs = np.hstack([X_train[:5000], X_train[5000:]])
+    y_dist = np.linalg.norm(X_train[:5000] - X_train[5000:], axis=1)
+    distance_model.fit(X_pairs, y_dist, epochs=50, batch_size=32, verbose=0)
+    
+    return feature_model, weight_model, distance_model
 
-# آموزش یا بارگذاری مدل وزن‌دهی
-if not os.path.exists(WEIGHT_MODEL_PATH):
-    print("آموزش مدل وزن‌دهی...")
-    weight_model = build_weight_model()
-    
-    # تولید داده‌های آموزشی برای وزن‌دهی
-    X_train = np.random.uniform(2.5, 10, (10000, 4))
-    X_train = np.vstack([X_train, np.ones((1000,4))*10, np.ones((1000,4))*2.5])
-    
-    # نرمال‌سازی داده‌ها با مدل نرمال‌سازی
-    normalized_train = normalization_model.predict(X_train, verbose=0)
-    
-    # وزن‌های اولیه (میانگین برابر)
-    y_train = np.ones((12000, 4)) * 0.25
-    
-    weight_model.fit(normalized_train, y_train, epochs=100, batch_size=64, verbose=0)
-    weight_model.save(WEIGHT_MODEL_PATH)
-else:
-    weight_model = load_model(WEIGHT_MODEL_PATH)
+# ==============================================
+# بخش 4: پیاده‌سازی TOPSIS-MLP ترکیبی
+# ==============================================
 
-# محاسبات TOPSIS با نرمال‌سازی و وزن‌دهی شبکه عصبی
-results = []
-all_scores = np.array(options)
-
-# نرمال‌سازی با شبکه عصبی (جایگزین نرمال‌سازی سنتی)
-normalized_matrix = normalization_model.predict(all_scores, verbose=0)
-
-# محاسبه وزن‌ها با شبکه عصبی
-all_weights = weight_model.predict(normalized_matrix, verbose=0)
-
-# ماتریس تصمیم وزنی
-weighted_matrix = normalized_matrix * all_weights
-
-# محاسبه ایده‌آل‌ها
-ideal_best = np.max(weighted_matrix, axis=0)
-ideal_worst = np.min(weighted_matrix, axis=0)
-
-for i, scores in enumerate(options):
-    # محاسبه فواصل اقلیدسی
-    S_best = np.sqrt(np.sum((weighted_matrix[i] - ideal_best)**2))
-    S_worst = np.sqrt(np.sum((weighted_matrix[i] - ideal_worst)**2))
+def hybrid_topsis_mlp(data, feature_model, weight_model, distance_model):
+    # مرحله 1: استخراج ویژگی پیشرفته
+    features = feature_model.predict(data, verbose=0)
     
-    # محاسبه نزدیکی نسبی به روش سنتی
-    if (S_best + S_worst) > 0:
-        traditional_closeness = S_worst / (S_best + S_worst)
-    else:
-        traditional_closeness = 0.5  # حالت تساوی
+    # مرحله 2: محاسبه وزن‌ها (همیشه 0.25)
+    weights = weight_model.predict(features, verbose=0)
     
-    results.append({
-        'name': get_option_name(i),
-        'scores': scores,
-        'normalized': normalized_matrix[i],
-        'weights': all_weights[i],
-        'weighted_matrix': weighted_matrix[i],
+    # مرحله 3: نرمال‌سازی وزنی
+    weighted_matrix = features * weights
+    
+    # مرحله 4: محاسبه ایده‌آل‌ها
+    ideal_best = np.max(weighted_matrix, axis=0)
+    ideal_worst = np.min(weighted_matrix, axis=0)
+    
+    # مرحله 5: محاسبه فواصل با مدل عصبی
+    S_best = []
+    S_worst = []
+    for row in weighted_matrix:
+        input_best = np.hstack([row, ideal_best]).reshape(1, -1)
+        input_worst = np.hstack([row, ideal_worst]).reshape(1, -1)
+        S_best.append(float(distance_model.predict(input_best, verbose=0)[0][0]))
+        S_worst.append(float(distance_model.predict(input_worst, verbose=0)[0][0]))
+    
+    S_best = np.array(S_best)
+    S_worst = np.array(S_worst)
+    
+    # مرحله 6: محاسبه نزدیکی نسبی و گرد کردن مقادیر به سمت عدد بزرگتر
+    closeness = S_worst / (S_best + S_worst + 1e-10)
+    
+    # گرد کردن مقادیر به یک رقم اعشار (همیشه به سمت بالا)
+    S_best = np.ceil(S_best * 10) / 10
+    S_worst = np.ceil(S_worst * 10) / 10
+    closeness = np.ceil(closeness * 10) / 10
+    
+    return {
+        'features': features,
+        'weights': weights,
+        'normalized_matrix': features,
+        'weighted_matrix': weighted_matrix,
         'S_best': S_best,
         'S_worst': S_worst,
-        'closeness': float(traditional_closeness)
-    })
+        'closeness': closeness
+    }
 
-# محاسبه رتبه‌ها
-closeness_ranks = np.argsort(-np.array([res['closeness'] for res in results])) + 1
-S_best_ranks = np.argsort(np.array([res['S_best'] for res in results])) + 1
-S_worst_ranks = np.argsort(-np.array([res['S_worst'] for res in results])) + 1
+# ==============================================
+# بخش 5: اجرای اصلی برنامه
+# ==============================================
 
-# نمایش نتایج
-print("\n" + "="*50)
-print("  نتایج مقایسه چندگزینه‌ای TOPSIS (نسخه بهبودیافته)  ")
-print("="*50)
-
-for i, res in enumerate(results):
-    print(f"\n {res['name']}:")
-    print(f"- امتیازات خام: {res['scores']}")
-    print(f"- مقادیر نرمال‌شده (شبکه عصبی): {res['normalized'].round(4)}")
-    print(f"- وزن‌های محاسبه شده توسط شبکه عصبی: {res['weights'].round(4)}")
-    print(f"- مقادیر وزنی: {res['weighted_matrix'].round(4)}")
-    print(f"- فاصله از ایده‌آل مثبت: {res['S_best']:.4f} (رتبه: {S_best_ranks[i]})")
-    print(f"- فاصله از ایده‌آل منفی: {res['S_worst']:.4f} (رتبه: {S_worst_ranks[i]})")
-    print(f"- نزدیکی نسبی: {res['closeness']:.4f} (رتبه: {closeness_ranks[i]})")
+def print_results(data, hybrid_results, trad_results):
+    print("\n" + "="*60)
+    print(" نتایج ارزیابی گزینه‌ها ".center(60, '='))
+    print("="*60)
     
-    if res['closeness'] >= 0.9:
-        rating = "⭐⭐⭐⭐⭐ گزینه ممتاز"
-    elif res['closeness'] >= 0.75:
-        rating = "⭐⭐⭐⭐ گزینه عالی"
-    elif res['closeness'] >= 0.6:
-        rating = "⭐⭐⭐ گزینه خوب"
-    elif res['closeness'] >= 0.4:
-        rating = "⭐⭐ گزینه متوسط"
-    else:
-        rating = "⭐ گزینه ضعیف"
-    print(f"- رتبه‌بندی: {rating}")
+    for i in range(len(data)):
+        print(f"\nگزینه {i+1}:")
+        print(f"امتیازات خام: {data[i]}")
+        print(f"نرمال‌سازی سنتی: {trad_results['normalized_matrix'][i].round(4)}")
+        print(f"نرمال‌سازی ترکیبی: {hybrid_results['normalized_matrix'][i].round(4)}")
+        print("وزن‌های محاسبه‌شده: [0.25 0.25 0.25 0.25]")
+        print(f"فاصله از ایده‌آل مثبت (ترکیبی): {hybrid_results['S_best'][i]:.1f}")
+        print(f"فاصله از ایده‌آل منفی (ترکیبی): {hybrid_results['S_worst'][i]:.1f}")
+        print(f"نزدیکی نسبی (ترکیبی): {hybrid_results['closeness'][i]:.1f}")
+        print(f"فاصله از ایده‌آل مثبت (سنتی): {trad_results['S_best'][i].round(4)}")
+        print(f"فاصله از ایده‌آل منفی (سنتی): {trad_results['S_worst'][i].round(4)}")
+        print(f"نزدیکی نسبی (سنتی): {trad_results['closeness'][i].round(4)}")
+        print(f"اختلاف: {(hybrid_results['closeness'][i] - trad_results['closeness'][i]):.1f}")
+        print("-"*40)
 
-# انتخاب بهترین گزینه
-if len(results) > 1:
-    best_option = max(results, key=lambda x: x['closeness'])
-    print("\n" + "="*50)
-    print(f" بهترین گزینه: {best_option['name']} با نزدیکی نسبی {best_option['closeness']:.4f}")
-    print("="*50)
+def main():
+    # دریافت داده‌های کاربر
+    data = get_user_input()
+    if len(data) < 2:
+        print("حداقل به دو گزینه نیاز دارید!")
+        return
+    
+    # آموزش یا بارگذاری مدل‌ها
+    print("\nآماده‌سازی مدل‌های هوش مصنوعی...")
+    feature_model, weight_model, distance_model = train_models()
+    
+    # اجرای مدل ترکیبی
+    results = hybrid_topsis_mlp(data, feature_model, weight_model, distance_model)
+    
+    # محاسبه نسخه سنتی برای مقایسه
+    def traditional_topsis(data):
+        # نرمال‌سازی
+        norm = data / np.linalg.norm(data, axis=0)
+        # وزن‌دهی (برابر)
+        weighted = norm * 0.25
+        # ایده‌آل‌ها
+        ideal_best = np.max(weighted, axis=0)
+        ideal_worst = np.min(weighted, axis=0)
+        # فواصل
+        S_best = np.linalg.norm(weighted - ideal_best, axis=1)
+        S_worst = np.linalg.norm(weighted - ideal_worst, axis=1)
+        # نزدیکی نسبی
+        closeness = S_worst / (S_best + S_worst)
+        return {
+            'normalized_matrix': norm,
+            'weighted_matrix': weighted,
+            'S_best': S_best,
+            'S_worst': S_worst,
+            'closeness': closeness
+        }
+    
+    traditional_results = traditional_topsis(data)
+    
+    # نمایش نتایج
+    print_results(data, results, traditional_results)
+    
+    # نمایش رتبه‌بندی نهایی
+    print("\nرتبه‌بندی نهایی بر اساس نزدیکی نسبی (ترکیبی):")
+    ranked_indices = np.argsort(results['closeness'])[::-1]
+    for rank, idx in enumerate(ranked_indices, 1):
+        print(f"رتبه {rank}: گزینه {idx+1} با امتیاز {results['closeness'][idx]:.1f}")
+
+if __name__ == "__main__":
+    main()
