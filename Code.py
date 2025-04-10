@@ -179,6 +179,50 @@ def print_results(data, hybrid_results, trad_results):
         print(f"اختلاف: {(hybrid_results['closeness'][i] - trad_results['closeness'][i]):.1f}")
         print("-"*40)
 
+def traditional_topsis(data):
+    """
+    محاسبه TOPSIS سنتی با اصلاحات:
+    1- محاسبه دقیق فواصل اقلیدسی
+    2- شناسایی صحیح ایده‌آل‌ها
+    3- جلوگیری از تقسیم بر صفر
+    4- گردسازی مناسب نتایج
+    """
+    # مرحله 1: نرمال‌سازی برداری
+    norms = np.linalg.norm(data, axis=0)
+    normalized_matrix = data / norms
+    
+    # مرحله 2: وزن‌دهی (فرض می‌کنیم وزن همه معیارها برابر است)
+    weights = np.array([0.25, 0.25, 0.25, 0.25])
+    weighted_matrix = normalized_matrix * weights
+    
+    # مرحله 3: شناسایی ایده‌آل‌های مثبت و منفی
+    # (فرض می‌کنیم همه معیارها مثبت هستند)
+    ideal_best = np.max(weighted_matrix, axis=0)
+    ideal_worst = np.min(weighted_matrix, axis=0)
+    
+    # مرحله 4: محاسبه فواصل از ایده‌آل‌ها
+    S_best = np.sqrt(np.sum((weighted_matrix - ideal_best)**2, axis=1))
+    S_worst = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2, axis=1))
+    
+    # مرحله 5: محاسبه نزدیکی نسبی با جلوگیری از تقسیم بر صفر
+    epsilon = 1e-10  # مقدار بسیار کوچک برای پایداری عددی
+    closeness = S_worst / (S_best + S_worst + epsilon)
+    
+    # مرحله 6: گردسازی نتایج برای نمایش بهتر
+    S_best = np.round(S_best, 4)
+    S_worst = np.round(S_worst, 4)
+    closeness = np.round(closeness, 4)
+    
+    return {
+        'normalized_matrix': normalized_matrix,
+        'weighted_matrix': weighted_matrix,
+        'ideal_best': ideal_best,
+        'ideal_worst': ideal_worst,
+        'S_best': S_best,
+        'S_worst': S_worst,
+        'closeness': closeness
+    }
+
 def main():
     # دریافت داده‌های کاربر
     data = get_user_input()
@@ -193,28 +237,7 @@ def main():
     # اجرای مدل ترکیبی
     results = hybrid_topsis_mlp(data, feature_model, weight_model, distance_model)
     
-    # محاسبه نسخه سنتی برای مقایسه
-    def traditional_topsis(data):
-        # نرمال‌سازی
-        norm = data / np.linalg.norm(data, axis=0)
-        # وزن‌دهی (برابر)
-        weighted = norm * 0.25
-        # ایده‌آل‌ها
-        ideal_best = np.max(weighted, axis=0)
-        ideal_worst = np.min(weighted, axis=0)
-        # فواصل
-        S_best = np.linalg.norm(weighted - ideal_best, axis=1)
-        S_worst = np.linalg.norm(weighted - ideal_worst, axis=1)
-        # نزدیکی نسبی
-        closeness = S_worst / (S_best + S_worst)
-        return {
-            'normalized_matrix': norm,
-            'weighted_matrix': weighted,
-            'S_best': S_best,
-            'S_worst': S_worst,
-            'closeness': closeness
-        }
-    
+    # محاسبه نسخه سنتی با تابع اصلاح شده
     traditional_results = traditional_topsis(data)
     
     # نمایش نتایج
