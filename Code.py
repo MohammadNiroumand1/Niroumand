@@ -1,14 +1,14 @@
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Input, Concatenate
+from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.optimizers import Adam
-from sklearn.preprocessing import MinMaxScaler
-import pandas as pd
+import warnings
 
 # تنظیمات تکرارپذیری
 np.random.seed(42)
 tf.random.set_seed(42)
+warnings.filterwarnings('ignore', category=UserWarning)
 
 # ==============================================
 # بخش 1: توابع کمکی و آماده‌سازی داده‌ها
@@ -47,100 +47,106 @@ def get_user_input():
     return np.array(options)
 
 # ==============================================
-# بخش 2: مدل‌های عصبی
+# بخش 2: مدل‌های عصبی بهینه‌شده
 # ==============================================
 
 def build_feature_extractor(input_dim):
     """مدل استخراج ویژگی پیشرفته"""
     model = Sequential([
-        Dense(32, activation='relu', input_shape=(input_dim,)),
+        Dense(64, activation='relu', input_shape=(input_dim,)),
+        Dense(32, activation='relu'),
         Dense(16, activation='relu'),
         Dense(input_dim, activation='linear', name='feature_output')
-    ])
-    return model
-
-def build_weight_model(input_dim):
-    """مدل محاسبه وزن‌های معیارها (اصلاح شده برای خروجی ثابت 0.25)"""
-    model = Sequential([
-        Dense(32, activation='relu', input_shape=(input_dim,)),
-        Dense(16, activation='relu'),
-        Dense(input_dim, activation='linear'),
-        tf.keras.layers.Lambda(lambda x: tf.ones_like(x) * 0.25)
     ])
     return model
 
 def build_distance_model(input_dim):
     """مدل محاسبه فاصله هوشمند"""
     input_layer = Input(shape=(input_dim*2,))
-    x = Dense(32, activation='relu')(input_layer)
+    x = Dense(64, activation='relu')(input_layer)
+    x = Dense(32, activation='relu')(x)
     x = Dense(16, activation='relu')(x)
     output = Dense(1, activation='linear')(x)
     return Model(input_layer, output)
 
 # ==============================================
-# بخش 3: آموزش مدل‌ها
+# بخش 3: آموزش مدل‌ها با بهینه‌سازی
 # ==============================================
+
+@tf.function(reduce_retracing=True)
+def train_step(model, x, y):
+    with tf.GradientTape() as tape:
+        predictions = model(x, training=True)
+        loss = tf.keras.losses.MSE(y, predictions)
+    gradients = tape.gradient(loss, model.trainable_variables)
+    model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    return loss
 
 def train_models():
-    # تولید داده‌های مصنوعی برای آموزش
+    # تولید داده‌های آموزشی
     X_train = np.random.uniform(2.5, 10, (10000, 4))
     
-    # آموزش مدل استخراج ویژگی
+    # مدل استخراج ویژگی
     feature_model = build_feature_extractor(4)
     feature_model.compile(optimizer=Adam(0.001), loss='mse')
-    feature_model.fit(X_train, X_train, epochs=50, batch_size=32, verbose=0)
+    feature_model.fit(X_train, X_train, epochs=100, batch_size=64, verbose=0)
     
-    # آموزش مدل وزن‌دهی (نیازی به آموزش واقعی نیست)
-    weight_model = build_weight_model(4)
-    weight_model.compile(optimizer=Adam(0.001), loss='mse')
-    
-    # آموزش مدل فاصله
+    # مدل فاصله
     distance_model = build_distance_model(4)
     distance_model.compile(optimizer=Adam(0.001), loss='mse')
-    # تولید داده‌های جفت‌شده برای آموزش فاصله
-    X_pairs = np.hstack([X_train[:5000], X_train[5000:]])
-    y_dist = np.linalg.norm(X_train[:5000] - X_train[5000:], axis=1)
-    distance_model.fit(X_pairs, y_dist, epochs=50, batch_size=32, verbose=0)
     
-    return feature_model, weight_model, distance_model
+    # داده‌های جفت‌شده برای آموزش فاصله
+    X_pairs = np.hstack([X_train[:5000], X_train[5000:]])
+    y_dist = np.linalg.norm(X_train[:5000] - X_train[5000:], axis=1) * np.random.uniform(0.9, 1.1, 5000)
+    distance_model.fit(X_pairs, y_dist, epochs=100, batch_size=64, verbose=0)
+    
+    return feature_model, distance_model
 
 # ==============================================
-# بخش 4: پیاده‌سازی TOPSIS-MLP ترکیبی
+# بخش 4: پیاده‌سازی TOPSIS-MLP ترکیبی بهینه‌شده
 # ==============================================
 
-def hybrid_topsis_mlp(data, feature_model, weight_model, distance_model):
-    # مرحله 1: استخراج ویژگی پیشرفته
+def hybrid_topsis_mlp(data, feature_model, distance_model):
+    # استخراج ویژگی‌ها
     features = feature_model.predict(data, verbose=0)
     
-    # مرحله 2: محاسبه وزن‌ها (همیشه 0.25)
-    weights = weight_model.predict(features, verbose=0)
-    
-    # مرحله 3: نرمال‌سازی وزنی
+    # وزن‌دهی ثابت
+    weights = np.array([0.25, 0.25, 0.25, 0.25])
     weighted_matrix = features * weights
     
-    # مرحله 4: محاسبه ایده‌آل‌ها
+    # محاسبه ایده‌آل‌ها
     ideal_best = np.max(weighted_matrix, axis=0)
     ideal_worst = np.min(weighted_matrix, axis=0)
     
-    # مرحله 5: محاسبه فواصل با مدل عصبی
-    S_best = []
-    S_worst = []
-    for row in weighted_matrix:
-        input_best = np.hstack([row, ideal_best]).reshape(1, -1)
-        input_worst = np.hstack([row, ideal_worst]).reshape(1, -1)
-        S_best.append(float(distance_model.predict(input_best, verbose=0)[0][0]))
-        S_worst.append(float(distance_model.predict(input_worst, verbose=0)[0][0]))
+    # محاسبه فواصل به صورت بهینه
+    if len(data) <= 10:
+        # محاسبات سنتی
+        S_best_trad = np.sqrt(np.sum((weighted_matrix - ideal_best)**2, axis=1))
+        S_worst_trad = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2, axis=1))
+        
+        # محاسبات عصبی به صورت گروهی
+        inputs_best = np.hstack([weighted_matrix, np.tile(ideal_best, (len(data), 1))])
+        inputs_worst = np.hstack([weighted_matrix, np.tile(ideal_worst, (len(data), 1))])
+        
+        S_best_nn = distance_model.predict(inputs_best, verbose=0).flatten()
+        S_worst_nn = distance_model.predict(inputs_worst, verbose=0).flatten()
+        
+        # ترکیب نتایج
+        S_best = 0.7 * S_best_nn + 0.3 * S_best_trad
+        S_worst = 0.7 * S_worst_nn + 0.3 * S_worst_trad
+    else:
+        # فقط روش سنتی برای داده‌های بزرگ
+        S_best = np.sqrt(np.sum((weighted_matrix - ideal_best)**2, axis=1))
+        S_worst = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2, axis=1))
     
-    S_best = np.array(S_best)
-    S_worst = np.array(S_worst)
+    # محاسبه نزدیکی نسبی
+    epsilon = 1e-10
+    closeness = S_worst / (S_best + S_worst + epsilon)
     
-    # مرحله 6: محاسبه نزدیکی نسبی و گرد کردن مقادیر به سمت عدد بزرگتر
-    closeness = S_worst / (S_best + S_worst + 1e-10)
-    
-    # گرد کردن مقادیر به یک رقم اعشار (همیشه به سمت بالا)
-    S_best = np.ceil(S_best * 10) / 10
-    S_worst = np.ceil(S_worst * 10) / 10
-    closeness = np.ceil(closeness * 10) / 10
+    # گرد کردن نتایج به نزدیکترین مقدار یک رقم اعشار (بدون سقف)
+    S_best = np.round(S_best * 10) / 10
+    S_worst = np.round(S_worst * 10) / 10
+    closeness = np.round(closeness * 10) / 10
     
     return {
         'features': features,
@@ -153,7 +159,7 @@ def hybrid_topsis_mlp(data, feature_model, weight_model, distance_model):
     }
 
 # ==============================================
-# بخش 5: اجرای اصلی برنامه
+# بخش 5: توابع نمایش و TOPSIS سنتی
 # ==============================================
 
 def print_results(data, hybrid_results, trad_results):
@@ -161,67 +167,56 @@ def print_results(data, hybrid_results, trad_results):
     print(" نتایج ارزیابی گزینه‌ها ".center(60, '='))
     print("="*60)
     
-    # محاسبه مقادیر نمایشی برای نرمال‌سازی ترکیبی (فقط برای نمایش)
     display_norm_hybrid = hybrid_results['normalized_matrix'] / np.linalg.norm(hybrid_results['normalized_matrix'], axis=0)
     
     for i in range(len(data)):
         print(f"\nگزینه {i+1}:")
         print(f"امتیازات خام: {data[i]}")
         print(f"نرمال‌سازی سنتی: {trad_results['normalized_matrix'][i].round(4)}")
-        print(f"نرمال‌سازی ترکیبی : {display_norm_hybrid[i].round(4)}")
-        print("وزن‌های محاسبه‌شده: [0.25 0.25 0.25 0.25]")
+        print(f"نرمال‌سازی ترکیبی: {display_norm_hybrid[i].round(4)}")
+        print("وزن‌های ثابت: [0.25 0.25 0.25 0.25]")
         print(f"فاصله از ایده‌آل مثبت (ترکیبی): {hybrid_results['S_best'][i]:.1f}")
         print(f"فاصله از ایده‌آل منفی (ترکیبی): {hybrid_results['S_worst'][i]:.1f}")
-        print(f"نزدیکی نسبی (ترکیبی): {hybrid_results['closeness'][i]:.1f}")
         print(f"فاصله از ایده‌آل مثبت (سنتی): {trad_results['S_best'][i].round(4)}")
         print(f"فاصله از ایده‌آل منفی (سنتی): {trad_results['S_worst'][i].round(4)}")
+        print(f"نزدیکی نسبی (ترکیبی): {hybrid_results['closeness'][i]:.1f}")
         print(f"نزدیکی نسبی (سنتی): {trad_results['closeness'][i].round(4)}")
         print(f"اختلاف: {(hybrid_results['closeness'][i] - trad_results['closeness'][i]):.1f}")
         print("-"*40)
 
 def traditional_topsis(data):
-    """
-    محاسبه TOPSIS سنتی با اصلاحات:
-    1- محاسبه دقیق فواصل اقلیدسی
-    2- شناسایی صحیح ایده‌آل‌ها
-    3- جلوگیری از تقسیم بر صفر
-    4- گردسازی مناسب نتایج
-    """
-    # مرحله 1: نرمال‌سازی برداری
+    """محاسبه TOPSIS سنتی با وزن‌های ثابت"""
+    # نرمال‌سازی برداری
     norms = np.linalg.norm(data, axis=0)
     normalized_matrix = data / norms
     
-    # مرحله 2: وزن‌دهی (فرض می‌کنیم وزن همه معیارها برابر است)
+    # وزن‌دهی ثابت
     weights = np.array([0.25, 0.25, 0.25, 0.25])
     weighted_matrix = normalized_matrix * weights
     
-    # مرحله 3: شناسایی ایده‌آل‌های مثبت و منفی
-    # (فرض می‌کنیم همه معیارها مثبت هستند)
+    # ایده‌آل‌ها
     ideal_best = np.max(weighted_matrix, axis=0)
     ideal_worst = np.min(weighted_matrix, axis=0)
     
-    # مرحله 4: محاسبه فواصل از ایده‌آل‌ها
+    # محاسبه فواصل
     S_best = np.sqrt(np.sum((weighted_matrix - ideal_best)**2, axis=1))
     S_worst = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2, axis=1))
     
-    # مرحله 5: محاسبه نزدیکی نسبی با جلوگیری از تقسیم بر صفر
-    epsilon = 1e-10  # مقدار بسیار کوچک برای پایداری عددی
+    # نزدیکی نسبی
+    epsilon = 1e-10
     closeness = S_worst / (S_best + S_worst + epsilon)
-    
-    # مرحله 6: گردسازی نتایج برای نمایش بهتر
-    S_best = np.round(S_best, 4)
-    S_worst = np.round(S_worst, 4)
-    closeness = np.round(closeness, 4)
     
     return {
         'normalized_matrix': normalized_matrix,
         'weighted_matrix': weighted_matrix,
-        'ideal_best': ideal_best,
-        'ideal_worst': ideal_worst,
         'S_best': S_best,
         'S_worst': S_worst,
         'closeness': closeness
     }
+
+# ==============================================
+# بخش 6: اجرای اصلی برنامه
+# ==============================================
 
 def main():
     # دریافت داده‌های کاربر
@@ -230,24 +225,26 @@ def main():
         print("حداقل به دو گزینه نیاز دارید!")
         return
     
-    # آموزش یا بارگذاری مدل‌ها
+    # آموزش مدل‌ها
     print("\nآماده‌سازی مدل‌های هوش مصنوعی...")
-    feature_model, weight_model, distance_model = train_models()
+    feature_model, distance_model = train_models()
     
     # اجرای مدل ترکیبی
-    results = hybrid_topsis_mlp(data, feature_model, weight_model, distance_model)
+    hybrid_results = hybrid_topsis_mlp(data, feature_model, distance_model)
     
-    # محاسبه نسخه سنتی با تابع اصلاح شده
+    # محاسبه نسخه سنتی
     traditional_results = traditional_topsis(data)
     
     # نمایش نتایج
-    print_results(data, results, traditional_results)
+    print_results(data, hybrid_results, traditional_results)
     
     # نمایش رتبه‌بندی نهایی
     print("\nرتبه‌بندی نهایی بر اساس نزدیکی نسبی (ترکیبی):")
-    ranked_indices = np.argsort(results['closeness'])[::-1]
+    ranked_indices = np.argsort(hybrid_results['closeness'])[::-1]
     for rank, idx in enumerate(ranked_indices, 1):
-        print(f"رتبه {rank}: گزینه {idx+1} با امتیاز {results['closeness'][idx]:.1f}")
+        print(f"رتبه {rank}: گزینه {idx+1} با امتیاز {hybrid_results['closeness'][idx]:.1f}")
 
 if __name__ == "__main__":
+    # غیرفعال کردن هشدارهای TensorFlow
+    tf.get_logger().setLevel('ERROR')
     main()
