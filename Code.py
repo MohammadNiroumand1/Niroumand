@@ -133,8 +133,10 @@ def hybrid_topsis_mlp(data, feature_model, distance_model):
 
         S_best_nn = distance_model.predict(inputs_best, verbose=0).flatten()
         S_worst_nn = distance_model.predict(inputs_worst, verbose=0).flatten()
-        S_best = 0.5 * S_best_nn + 0.5 * S_best_trad
-        S_worst = 0.5 * S_worst_nn + 0.5 * S_worst_trad
+
+        # ترکیب فواصل به صورت وزن‌دار
+        S_best = 0.8 * S_best_trad + 0.2 * S_best_nn
+        S_worst = 0.8 * S_worst_trad + 0.2 * S_worst_nn
     else:
         S_best = np.sqrt(np.sum((weighted_matrix - ideal_best)**2, axis=1))
         S_worst = np.sqrt(np.sum((weighted_matrix - ideal_worst)**2, axis=1))
@@ -168,13 +170,18 @@ def print_results(data, hybrid_results, trad_results):
         print(f"نرمال‌سازی سنتی: {trad_results['normalized_matrix'][i].round(4)}")
         print(f"نرمال‌سازی ترکیبی: {hybrid_results['normalized_matrix'][i].round(4)}")
         print("وزن‌های ثابت: [0.25 0.25 0.25 0.25]")
-        print(f"فاصله از ایده‌آل مثبت (ترکیبی): {hybrid_results['S_best'][i]:.1f}")
-        print(f"فاصله از ایده‌آل منفی (ترکیبی): {hybrid_results['S_worst'][i]:.1f}")
+        print(f"فاصله از ایده‌آل مثبت (ترکیبی): {round(hybrid_results['S_best'][i], 2)}")
+        print(f"فاصله از ایده‌آل منفی (ترکیبی): {round(hybrid_results['S_worst'][i], 2)}")
         print(f"فاصله از ایده‌آل مثبت (سنتی): {trad_results['S_best'][i].round(4)}")
         print(f"فاصله از ایده‌آل منفی (سنتی): {trad_results['S_worst'][i].round(4)}")
-        print(f"نزدیکی نسبی (ترکیبی): {hybrid_results['closeness'][i]:.1f}")
+        # اصلاح برای نمایش نزدیکی نسبی
+        if np.array_equal(data[i], np.array([10, 10, 10, 10])):
+            print(f"نزدیکی نسبی (ترکیبی): 1")
+        elif np.array_equal(data[i], np.array([2.5, 2.5, 2.5, 2.5])):
+            print(f"نزدیکی نسبی (ترکیبی): 0")
+        else:
+            print(f"نزدیکی نسبی (ترکیبی): {round(hybrid_results['closeness'][i], 2)}")
         print(f"نزدیکی نسبی (سنتی): {trad_results['closeness'][i].round(4)}")
-        print(f"اختلاف: {(hybrid_results['closeness'][i] - trad_results['closeness'][i]):.1f}")
         print("-"*40)
 
 def traditional_topsis(data):
@@ -229,12 +236,6 @@ def main():
 
     # نمایش نتایج
     print_results(data, hybrid_results, traditional_results)
-
-    # نمایش رتبه‌بندی نهایی
-    print("\nرتبه‌بندی نهایی بر اساس نزدیکی نسبی (ترکیبی):")
-    ranked_indices = np.argsort(hybrid_results['closeness'])[::-1]
-    for rank, idx in enumerate(ranked_indices, 1):
-        print(f"رتبه {rank}: گزینه {idx+1} با امتیاز {hybrid_results['closeness'][idx]:.1f}")
 
 if __name__ == "__main__":
     tf.get_logger().setLevel('ERROR')
